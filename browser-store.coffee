@@ -1,193 +1,112 @@
-# packages/localstorage-polyfill doesn't attempt to implement storage
-# event.
+# sits in front of the router and provides 'currentPage' and 'nextPage',
+# whilst setting the correct classes on the body to allow transitions, namely:
+#
+#   body.transitioning.from_X.to_Y
+(->
+  Transitioner = ->
+    @_currentPage = null
+    # @_currentPageListeners = new Meteor.deps._ContextSet()
+    @_currentPageListeners = new Deps.Dependency()
+    @_nextPage = null
+    @_nextPageListeners = new Deps.Dependency()
+    @_direction = null
+    @_options = {}
 
-polyfilled = not window.localStorage.length?
+  Transitioner::_transitionEvents = "webkitTransitionEnd.transitioner oTransitionEnd.transitioner transitionEnd.transitioner msTransitionEnd.transitioner transitionend.transitioner"
+  Transitioner::_transitionClasses = ->
+    "transitioning from_" + @_currentPage + " to_" + @_nextPage + " going_" + @_direction
 
+  Transitioner::setOptions = (options) ->
+    _.extend @_options, options
 
-# Chrome bug http://code.google.com/p/chromium/issues/detail?id=152424
-# means we can't rely on getting the current value the first time.
+  Transitioner::currentPage = ->
+    Deps.depend @_currentPageListeners
+    @_currentPage
 
-chrome = $.browser.chrome
+  Transitioner::_setCurrentPage = (page) ->
+    @_currentPage = page
+    @_currentPageListeners.changed()
 
+  Transitioner::nextPage = ->
+    Deps.depend @_nextPageListeners
+    @_nextPage
 
-# Can't rely on storage event.
+  Transitioner::_setNextPage = (page) ->
+    @_nextPage = page
+    @_nextPageListeners.changed()
 
-polling = polyfilled or chrome
+  Transitioner::listen = ->
+    self = this
+    Deps.autorun ->
+      self.transition Sparrow.shift()
 
+  # derp
 
-localStoragePrefix = 'Meteor.BrowserStore.'
+  
+  # self.transition(Meteor.Router.page()); 
+  
+  # do a transition to newPage, if we are already set and there already
+  #
+  # note: this is called inside an autorun, so we need to take care to not 
+  # do anything reactive.
+  
+  # var shift_current = Session.get("shift_current")
+  # console.log("shift_current", shift_current)
+  # console.log("shift_area", Session.get("shift_area"))
+  Transitioner::transition = (newPage) ->
+    self = this
+    
+    # this is our first page? don't do a transition
+    return self._setCurrentPage(Session.get("shift_current"))  unless self._currentPage
+    
+    # return self._setCurrentPage(newPage); 
+    
+    # if we are transitioning already, quickly finish that transition
+    
+    # console.log("_nextPage", self._nextPage) 
+    self.endTransition()  if self._nextPage
+    
+    # if we are transitioning to the page we are already on, no-op
+    
+    # console.log(self._currentPage, newPage) 
+    return  if self._currentPage is newPage
+    
+    # Start the transition -- first tell any listeners to re-draw themselves
+    self._setNextPage newPage
+    
+    # wait until they are done/doing:
+    Meteor._atFlush ->
+      self._options.before and self._options.before()
 
-itemKey = (localStorageKey) ->
-  unless _.isString(localStorageKey)
-    throw new Error('invalid key: ' + localStorageKey)
-  if localStorageKey.substr(0, localStoragePrefix.length) is localStoragePrefix
-    return localStorageKey.substr(localStoragePrefix.length)
-  else
-    return null
+      # derp a herp
 
-`
-  var stringify = function (value) {
-    if (value === undefined)
-      return 'undefined';
-    return JSON.stringify(value);
-  };
-  var parse = function (serialized) {
-    if (serialized === undefined || serialized === 'undefined')
-      return undefined;
-    return JSON.parse(serialized);
-  };
-`
-
-keysToPoll = []
-
-Meteor.BrowserStore = _.extend({}, {
-    keys: {}, # key -> value
-    keyDeps: {}, # key -> _ContextSet
-    keyValueDeps: {}, # key -> value -> _ContextSet
-
-    _save: (key, value) ->
-      if value?
-        localStorage.setItem(localStoragePrefix + key, value)
-      else
-        localStorage.removeItem(localStoragePrefix + key)
-
-    _fetch: (key) ->
-      localStorage.getItem(localStoragePrefix + key)
-
-    _cacheSet: `function (key, serializedValue) {
-      var self = this;
-      var oldSerializedValue = 'undefined';
-      if (_.has(self.keys, key)) oldSerializedValue = self.keys[key];
-      if (serializedValue === oldSerializedValue)
-        return;
-      self.keys[key] = serializedValue;
-
-      var invalidateAll = function (cset) {
-        cset && cset.invalidateAll();
-      };
-
-      invalidateAll(self.keyDeps[key]);
-      if (self.keyValueDeps[key]) {
-        invalidateAll(self.keyValueDeps[key][oldSerializedValue]);
-        invalidateAll(self.keyValueDeps[key][serializedValue]);
-      }
-    }`,
-
-    set: `function (key, value) {
-      var self = this;
-      value = stringify(value);
-      self._cacheSet(key, value);
-      self._save(key, value);
-    }`,
-
-    _initialFetch: (key) ->
-      if polling and key not in keysToPoll
-        keysToPoll.push(key)
-        @_refresh key
-      undefined
-
-    get: (key) ->
-      @_initialFetch(key)
-      @_ensureKey(key)
-      Deps.depend @keyDeps[key]
-      return parse(@keys[key])
-
-    equals: `function (key, value) {
-      var self = this;
-      self._initialFetch(key)
-      var context = Deps.active
-
-      // We don't allow objects (or arrays that might include objects) for
-      // .equals, because JSON.stringify doesn't canonicalize object key
-      // order. (We can make equals have the right return value by parsing the
-      // current value and using _.isEqual, but we won't have a canonical
-      // element of keyValueDeps[key] to store the context.) You can still use
-      // "_.isEqual(Session.get(key), value)".
-      //
-      // XXX we could allow arrays as long as we recursively check that there
-      // are no objects
-      if (typeof value !== 'string' &&
-          typeof value !== 'number' &&
-          typeof value !== 'boolean' &&
-          typeof value !== 'undefined' &&
-          value !== null)
-        throw new Error("BrowserStore.equals: value must be scalar");
-      var serializedValue = stringify(value);
-
-      if (context) {
-        self._ensureKey(key);
-
-        if (! _.has(self.keyValueDeps[key], serializedValue))
-          # self.keyValueDeps[key][serializedValue] = new Meteor.deps._ContextSet;
-
-          self.keyValueDeps[key][serializedValue] = new Deps.Dependency;
-
-        var isNew = self.keyValueDeps[key][serializedValue].add(context);
-        if (isNew) {
-          context.onInvalidate(function () {
-            // clean up [key][serializedValue] if it's now empty, so we don't
-            // use O(n) memory for n = values seen ever
-            if (self.keyValueDeps[key][serializedValue].isEmpty())
-              delete self.keyValueDeps[key][serializedValue];
-          });
-        }
-      }
-
-      var oldValue = undefined;
-      if (_.has(self.keys, key)) oldValue = parse(self.keys[key]);
-      return oldValue === value;
-    }`,
-
-    _ensureKey: `function (key) {
-      var self = this;
-      if (!(key in self.keyDeps)) {
-        self.keyDeps[key] = new Deps.Dependency;
-        self.keyValueDeps[key] = {};
-      }
-    }`,
-
-    _each: (callback) ->
-      if polyfilled
-        throw new Error('_each is not supported in the polyfill implementation')
-      len = localStorage.length
-      for i in [0...len]
-        localStorageKey = localStorage.key(i)
-        key = itemKey(localStorageKey)
-        if key
-          callback(key, localStorage.getItem(localStorageKey))
-
-    ## not supported in polyfill implementation
-    # clear: ->
-    #   toRemove = []
-    #   @_each (key) => toRemove.push(key)
-    #   @set(key, null) for key in toRemove
-
-    _refresh: (key) ->
-      @_cacheSet key, @_fetch(key)
-
-    _poll: ->
-      @_refresh key for key in keysToPoll
-      undefined
-
-    _onStorageEvent: (event) ->
-      if key = itemKey(event.key)
-        @_refresh key
-      undefined
-
-    _listenForStorageEvent: ->
-      @_each (key, val) => @_cacheSet(key, val)
-
-      if window.addEventListener
-        window.addEventListener 'storage', _.bind(@_onStorageEvent, @), false
-      else if window.attachEvent
-        window.attachEvent 'onstorage', _.bind(@_onStorageEvent, @)
-
-    _startup: ->
-      if polling
-        setInterval(_.bind(@_poll, @), 3000)
-      else
-        @_listenForStorageEvent()
-  })
+      # add relevant classes to the body and wait for the body to finish 
+      # transitioning (this is how we know the transition is done)
+      self.transitionClasses = self._transitionClasses()
+      $("body").addClass(self.transitionClasses).on self._transitionEvents, (e) ->
+        self.endTransition()  if $(e.target).is("body")
 
 
-Meteor.startup -> Meteor.BrowserStore._startup()
+
+  Transitioner::endTransition = ->
+    self = this
+    
+    # if nextPage isn't set, something weird is going on, bail
+    return  unless self._nextPage
+    
+    # switch
+    self._setCurrentPage self._nextPage
+    self._setNextPage null
+    
+    # clean up our transitioning state
+    Meteor._atFlush ->
+      classes = self.transitionClasses
+      $("body").off(".transitioner").removeClass classes
+      self._options.after and self._options.after()
+
+
+  Meteor.Transitioner = new Transitioner()
+  Meteor.startup ->
+    Meteor.Transitioner.listen()
+
+)()
