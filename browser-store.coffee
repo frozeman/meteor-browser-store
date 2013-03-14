@@ -95,7 +95,7 @@ Meteor.BrowserStore = _.extend({}, {
     equals: `function (key, value) {
       var self = this;
       self._initialFetch(key)
-      var context = Deps.currentComputation
+      var context = Deps.active
 
       // We don't allow objects (or arrays that might include objects) for
       // .equals, because JSON.stringify doesn't canonicalize object key
