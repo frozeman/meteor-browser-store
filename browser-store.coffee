@@ -89,13 +89,13 @@ Meteor.BrowserStore = _.extend({}, {
     get: (key) ->
       @_initialFetch(key)
       @_ensureKey(key)
-      @keyDeps[key].addCurrentContext();
+      Deps.depend @keyDeps[key]
       return parse(@keys[key])
 
     equals: `function (key, value) {
       var self = this;
       self._initialFetch(key)
-      var context = Meteor.deps.Context.current;
+      var context = Deps.currentComputation
 
       // We don't allow objects (or arrays that might include objects) for
       // .equals, because JSON.stringify doesn't canonicalize object key
@@ -118,7 +118,9 @@ Meteor.BrowserStore = _.extend({}, {
         self._ensureKey(key);
 
         if (! _.has(self.keyValueDeps[key], serializedValue))
-          self.keyValueDeps[key][serializedValue] = new Meteor.deps._ContextSet;
+          # self.keyValueDeps[key][serializedValue] = new Meteor.deps._ContextSet;
+
+          self.keyValueDeps[key][serializedValue] = new Deps.Dependency;
 
         var isNew = self.keyValueDeps[key][serializedValue].add(context);
         if (isNew) {
@@ -139,7 +141,7 @@ Meteor.BrowserStore = _.extend({}, {
     _ensureKey: `function (key) {
       var self = this;
       if (!(key in self.keyDeps)) {
-        self.keyDeps[key] = new Meteor.deps._ContextSet;
+        self.keyDeps[key] = new Deps.Dependency;
         self.keyValueDeps[key] = {};
       }
     }`,
